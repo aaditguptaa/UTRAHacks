@@ -1,0 +1,21 @@
+## Inspiration
+Our robot is inspired by the skills of biathletes. In addition, the project was designed and named after Isaac, a friend of a team member who enjoys skiing.
+
+## What it does
+The robot recognizes colours to follow a designated path and complete a desired objective(delivery of objects).
+To begin the course, the robot will need to pick up a box located beside the blue circles on the track. The robot will then need to carry the box to the blue circle on the green path to unlock that path and begin that section. After completing the section, the robot can then pick up another box on its way back to the black path and use the box to unlock the section or simply complete the course.
+
+## How we built it
+We wired and connected a colour sensor, an IR sensor and an ultrasonic sensor to an Arduino. The Arduino communicates with the motor drivers(DC motors/wheels) and the servo motors(act as a forklift).
+
+## Challenges we ran into
+Our team experienced damage to equipment, as the DC motor and (especially) the wheel axles kept breaking. We also experienced challenges with the layout of components and wiring everything, as we lacked enough wires(they were also very short).
+
+## Accomplishments that we're proud of
+Our team was able to adapt with our resources and determine an efficient layout, and receive appropriate building parts. Though many of us did not have any prior hackathon or hardware experience, we were still able to aid our team(slide making, basic coding, and delivery of parts when they became extremely damaged).
+
+- Our robot also detects and avoids frontal obstacles.
+## What we learned.
+The majority of the team members are high schoolers with no prior hackathon experience(3 grade 11s and 2 uni students). Today was our introduction to Arduino and general hackware. We also learned essential teamwork, communication and organization skills. Learning to connect with others who were previously "strangers" just yesterday, and how important networking really is.
+## What's next for Isaac's Basics
+Isaac's Basics can immediately become a source for the education of robotics. The components are generally simple, and if given proper instructions, even young children can build their own general or personalized Isaac's Basics. In the long term, the mechanisms of Isaac's basics can aid with warehouse movement(carrying boxes) and crop development for agriculture(detecting desired ground areas and planting seeds).
