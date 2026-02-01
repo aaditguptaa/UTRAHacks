@@ -1,34 +1,27 @@
 /*
- * Autonomous Robot Car with Robotic Arm
- * Arduino Uno - Robotics Hackathon
- *
- * HARDWARE:
- * - V575 Color Sensor (TCS3200-based)
- * - 2x MH Sensor Series Flying Fish IR Sensors
- * - HY-SRF05 Ultrasonic Sensor
- * - 2x SG90 Servos
- * - DC Motors + L298N
+ * HACKATHON COMPETITION CODE - FULLY AUTONOMOUS
+ * No serial dependency - runs on battery power
  */
 
 #include <Servo.h>
 
 // ==================== PIN DEFINITIONS ====================
 
-// V575 Color Sensor
+// Color Sensor
 #define S0 4
 #define S1 5
 #define S2 6
 #define S3 7
 #define sensorOut 8
-#define OE A2  // Active LOW
+#define OE A2
 
-// IR Sensors
+// IR Sensors (for ramp detection)
 #define IR_LEFT A0
 #define IR_RIGHT A1
 
 // Ultrasonic Sensor
 #define TRIG_PIN 9
-#define ECHO_PIN 9
+#define ECHO_PIN 17  // A3 as digital pin
 
 // L298N Motor Driver
 #define ENA 3
@@ -38,74 +31,81 @@
 #define IN3 12
 #define IN4 13
 
-// Servos
-#define SERVO_BASE A4
-#define SERVO_GRIPPER A5
+// Lift Arm Servo
+#define LIFT_ARM_PIN 18  // A4 as digital pin
 
 // ==================== GLOBAL VARIABLES ====================
 
-Servo baseServo;
-Servo gripperServo;
+Servo liftArm;
+
+// Arm positions
+const int ARM_HOME = 90;
+const int ARM_HOOK_DOWN = 65;
+const int ARM_LIFT_UP = 110;
+
+// Motor speeds
+int motorSpeed = 150;
+int turnSpeed = 100;
+int slowSpeed = 80;
+int rampClimbSpeed = 180;
+
+// Ultrasonic
+long duration;
+int distance;
+
+// Timing variables
+const unsigned long TURN_90_TIME = 650;
+const unsigned long TURN_180_TIME = 1300;
+const unsigned long MOVE_BOX_OFFSET = 300;
+
+// State tracking
+bool hasBox = false;
+enum RobotState {
+  SEARCHING_FOR_PATH,
+  FOLLOWING_PATH,
+  HANDLING_BOX,
+  TARGET_SHOOTING,
+  OBSTACLE_COURSE,
+  COMPLETING_COURSE
+};
+
+RobotState currentState = SEARCHING_FOR_PATH;
 
 // Color sensor readings
 int redFrequency = 0;
 int greenFrequency = 0;
 int blueFrequency = 0;
 
-// Debug settings
-bool DEBUG_COLOR = true;
-unsigned long lastColorPrint = 0;
-const unsigned long COLOR_PRINT_INTERVAL = 300;
-
-// Motor speeds
-int motorSpeed = 150;
-int turnSpeed = 100;
-
-// Ultrasonic
-long duration;
-int distance;
-
-// ==================== STATE MACHINE ====================
-
-enum RobotState {
-  FOLLOWING_LINE,
-  OBJECT_PICKUP,
-  OBJECT_PLACE,
-  AVOIDING_OBSTACLE
-};
-
-RobotState currentState = FOLLOWING_LINE;
-
-// ==================== COLOR RANGES (CALIBRATE!) ====================
-
+// Color ranges - UPDATE WITH YOUR VALUES!
 struct ColorRange {
   int rMin, rMax;
   int gMin, gMax;
   int bMin, bMax;
 };
 
-ColorRange redColor   = {20, 50, 80, 150, 80, 150};
-ColorRange greenColor = {80, 150, 20, 50, 80, 150};
-ColorRange blueColor  = {80, 150, 80, 150, 20, 50};
-
-// ==================== ARM POSITIONS ====================
-
-struct ArmPosition {
-  int base;
-  int gripper;
-};
-
-ArmPosition homePos       = {90, 90};
-ArmPosition pickupPos     = {90, 10};
-ArmPosition holdPos       = {90, 170};
-ArmPosition placeLeftPos  = {45, 170};
-ArmPosition releasePos    = {90, 10};
+// CALIBRATE THESE!
+ColorRange pathRed = {20, 50, 80, 150, 80, 150};
+ColorRange pathGreen = {80, 150, 20, 50, 80, 150};
+ColorRange pathBlue = {80, 150, 80, 150, 20, 50};
 
 // ==================== SETUP ====================
 
 void setup() {
-  Serial.begin(9600);
+  // NO SERIAL = FASTER STARTUP!
+  // Serial.begin(9600);  // REMOVED for competition
+  
+  // Initialize everything quickly
+  initializeRobot();
+  
+  // Wait 2 seconds for robot placement
+  delay(2000);
+  
+  // Start autonomous operation immediately
+  currentState = SEARCHING_FOR_PATH;
+}
 
+void initializeRobot() {
+  // Color Sensor
   pinMode(S0, OUTPUT);
   pinMode(S1, OUTPUT);
   pinMode(S2, OUTPUT);
@@ -113,16 +113,19 @@ void setup() {
   pinMode(sensorOut, INPUT);
   pinMode(OE, OUTPUT);
 
-  digitalWrite(OE, LOW);      // Enable color sensor
-  digitalWrite(S0, HIGH);     // 20% scaling
+  digitalWrite(OE, LOW);
+  digitalWrite(S0, HIGH);
   digitalWrite(S1, LOW);
 
+  // IR Sensors
   pinMode(IR_LEFT, INPUT);
   pinMode(IR_RIGHT, INPUT);
 
+  // Ultrasonic
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
 
+  // Motor Driver
   pinMode(ENA, OUTPUT);
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
@@ -130,65 +133,312 @@ void setup() {
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
 
-  baseServo.attach(SERVO_BASE);
-  gripperServo.attach(SERVO_GRIPPER);
-
-  moveArmToPosition(homePos);
-
-  Serial.println("Robot Initialized");
-  Serial.println("Printing COLOR SENSOR OUTPUT...");
-  delay(1500);
+  // Servo
+  liftArm.attach(LIFT_ARM_PIN);
+  liftArm.write(ARM_HOME);
 }
 
 // ==================== MAIN LOOP ====================
 
 void loop() {
+  // Read sensors
   int irLeft = digitalRead(IR_LEFT);
   int irRight = digitalRead(IR_RIGHT);
-
   distance = getDistance();
-  String color = readColor();
-
+  String color = detectPathColor();
+  
+  // Main autonomous state machine
   switch (currentState) {
-
-    case FOLLOWING_LINE:
-      if (distance < 15 && distance > 0) {
-        currentState = AVOIDING_OBSTACLE;
-        break;
-      }
-
-      if (color == "RED") {
-        stopMotors();
-        currentState = OBJECT_PICKUP;
-        break;
-      }
-
-      if (color == "GREEN") {
-        stopMotors();
-        currentState = OBJECT_PLACE;
-        break;
-      }
-
-      followLine(irLeft, irRight);
+    case SEARCHING_FOR_PATH:
+      searchForPath(irLeft, irRight, color);
       break;
-
-    case AVOIDING_OBSTACLE:
-      avoidObstacle();
-      currentState = FOLLOWING_LINE;
+      
+    case FOLLOWING_PATH:
+      followPath(irLeft, irRight, distance, color);
       break;
-
-    case OBJECT_PICKUP:
-      performPickup();
-      currentState = FOLLOWING_LINE;
+      
+    case HANDLING_BOX:
+      handleBoxSequence();
       break;
-
-    case OBJECT_PLACE:
-      performPlace();
-      currentState = FOLLOWING_LINE;
+      
+    case TARGET_SHOOTING:
+      executeTargetShooting(irLeft, irRight, color);
+      break;
+      
+    case OBSTACLE_COURSE:
+      executeObstacleCourse(irLeft, irRight, distance);
+      break;
+      
+    case COMPLETING_COURSE:
+      completeCourse();
       break;
   }
-
+  
   delay(40);
+}
+
+// ==================== AUTONOMOUS DECISION MAKING ====================
+
+void searchForPath(int irLeft, int irRight, String color) {
+  // Move forward slowly while looking for a colored path
+  moveForwardSlow();
+  
+  if (color == "RED") {
+    // Found red path - obstacle course
+    stopMotors();
+    delay(500);
+    currentState = OBSTACLE_COURSE;
+  }
+  else if (color == "GREEN") {
+    // Found green path - target shooting
+    stopMotors();
+    delay(500);
+    currentState = TARGET_SHOOTING;
+  }
+  else if (color == "BLUE" && !hasBox) {
+    // Found blue tape - box pickup
+    stopMotors();
+    delay(500);
+    currentState = HANDLING_BOX;
+  }
+  else {
+    // Keep searching
+    currentState = FOLLOWING_PATH;
+  }
+}
+
+void followPath(int irLeft, int irRight, int distance, String color) {
+  // Simple obstacle avoidance
+  if (distance < 15 && distance > 0) {
+    avoidObstacle();
+    return;
+  }
+  
+  // Check for color decisions
+  if (color == "RED") {
+    // Switch to obstacle course
+    currentState = OBSTACLE_COURSE;
+    return;
+  }
+  else if (color == "GREEN") {
+    // Switch to target shooting
+    currentState = TARGET_SHOOTING;
+    return;
+  }
+  else if (color == "BLUE" && !hasBox) {
+    // Box pickup
+    currentState = HANDLING_BOX;
+    return;
+  }
+  
+  // Basic forward movement
+  moveForward();
+}
+
+// ==================== BOX HANDLING ====================
+
+void handleBoxSequence() {
+  static int boxStep = 0;
+  static unsigned long boxTimer = 0;
+  
+  switch (boxStep) {
+    case 0: // Turn to face box
+      turnRight();
+      delay(TURN_90_TIME);
+      stopMotors();
+      boxStep = 1;
+      boxTimer = millis();
+      break;
+      
+    case 1: // Approach box
+      moveForwardSlow();
+      if (millis() - boxTimer > MOVE_BOX_OFFSET) {
+        stopMotors();
+        boxStep = 2;
+        boxTimer = millis();
+      }
+      break;
+      
+    case 2: // Lower hook
+      liftArm.write(ARM_HOOK_DOWN);
+      delay(1000);
+      boxStep = 3;
+      boxTimer = millis();
+      break;
+      
+    case 3: // Lift box
+      liftArm.write(ARM_LIFT_UP);
+      delay(1000);
+      hasBox = true;
+      boxStep = 4;
+      boxTimer = millis();
+      break;
+      
+    case 4: // Back up
+      moveBackwardSlow();
+      if (millis() - boxTimer > 300) {
+        stopMotors();
+        boxStep = 5;
+        boxTimer = millis();
+      }
+      break;
+      
+    case 5: // Turn to place
+      turnLeft();
+      delay(TURN_180_TIME);
+      stopMotors();
+      boxStep = 6;
+      boxTimer = millis();
+      break;
+      
+    case 6: // Move to place position
+      moveForwardSlow();
+      if (millis() - boxTimer > MOVE_BOX_OFFSET) {
+        stopMotors();
+        boxStep = 7;
+        boxTimer = millis();
+      }
+      break;
+      
+    case 7: // Place box
+      liftArm.write(ARM_HOOK_DOWN);
+      delay(1000);
+      boxStep = 8;
+      boxTimer = millis();
+      break;
+      
+    case 8: // Return arm to home
+      liftArm.write(ARM_HOME);
+      delay(500);
+      hasBox = false;
+      boxStep = 9;
+      boxTimer = millis();
+      break;
+      
+    case 9: // Return to path
+      turnRight();
+      delay(TURN_90_TIME);
+      stopMotors();
+      currentState = FOLLOWING_PATH;
+      boxStep = 0;
+      break;
+  }
+}
+
+// ==================== TARGET SHOOTING ====================
+
+void executeTargetShooting(int irLeft, int irRight, String color) {
+  static int targetStep = 0;
+  static unsigned long targetTimer = 0;
+  
+  switch (targetStep) {
+    case 0: // Climb ramp using IR sensors
+      climbRamp(irLeft, irRight);
+      if (irLeft == 1 && irRight == 1) { // At top
+        stopMotors();
+        targetStep = 1;
+        targetTimer = millis();
+      }
+      break;
+      
+    case 1: // Navigate to center (simplified)
+      // For competition: Just drive forward to push ball
+      moveForwardSlow();
+      if (millis() - targetTimer > 2000) {
+        stopMotors();
+        targetStep = 2;
+        targetTimer = millis();
+      }
+      break;
+      
+    case 2: // Descend ramp
+      turnRight();
+      delay(1600);
+      stopMotors();
+      moveForwardSlow();
+      delay(1000);
+      currentState = COMPLETING_COURSE;
+      targetStep = 0;
+      break;
+  }
+}
+
+void climbRamp(int irLeft, int irRight) {
+  if (irLeft == 0 && irRight == 0) {
+    digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+    digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+    analogWrite(ENA, rampClimbSpeed);
+    analogWrite(ENB, rampClimbSpeed);
+  }
+  else if (irLeft == 0 && irRight == 1) {
+    analogWrite(ENA, rampClimbSpeed - 50);
+    analogWrite(ENB, rampClimbSpeed);
+  }
+  else if (irLeft == 1 && irRight == 0) {
+    analogWrite(ENA, rampClimbSpeed);
+    analogWrite(ENB, rampClimbSpeed - 50);
+  }
+  else {
+    // At top - handled by calling function
+  }
+}
+
+// ==================== OBSTACLE COURSE ====================
+
+void executeObstacleCourse(int irLeft, int irRight, int distance) {
+  // Simple obstacle course: forward + avoid
+  if (distance < 20 && distance > 0) {
+    avoidObstacle();
+  } else {
+    moveForward();
+  }
+  
+  // After some time, consider it complete
+  static unsigned long courseStart = millis();
+  if (millis() - courseStart > 45000) { // 45 seconds
+    currentState = COMPLETING_COURSE;
+  }
+}
+
+void completeCourse() {
+  // Drive forward to finish
+  moveForward();
+}
+
+// ==================== COLOR DETECTION ====================
+
+String detectPathColor() {
+  // Read color sensor
+  digitalWrite(S2, LOW); digitalWrite(S3, LOW);
+  redFrequency = pulseIn(sensorOut, LOW);
+  delay(2);
+
+  digitalWrite(S2, HIGH); digitalWrite(S3, HIGH);
+  greenFrequency = pulseIn(sensorOut, LOW);
+  delay(2);
+
+  digitalWrite(S2, LOW); digitalWrite(S3, HIGH);
+  blueFrequency = pulseIn(sensorOut, LOW);
+  delay(2);
+
+  // Check ranges
+  if (isInRange(redFrequency, greenFrequency, blueFrequency, pathRed)) {
+    return "RED";
+  }
+  if (isInRange(redFrequency, greenFrequency, blueFrequency, pathGreen)) {
+    return "GREEN";
+  }
+  if (isInRange(redFrequency, greenFrequency, blueFrequency, pathBlue)) {
+    return "BLUE";
+  }
+  
+  return "NONE";
+}
+
+bool isInRange(int r, int g, int b, ColorRange range) {
+  return (r >= range.rMin && r <= range.rMax &&
+          g >= range.gMin && g <= range.gMax &&
+          b >= range.bMin && b <= range.bMax);
 }
 
 // ==================== MOTOR FUNCTIONS ====================
@@ -200,11 +450,25 @@ void moveForward() {
   analogWrite(ENB, motorSpeed);
 }
 
+void moveForwardSlow() {
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+  analogWrite(ENA, slowSpeed);
+  analogWrite(ENB, slowSpeed);
+}
+
 void moveBackward() {
   digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
   digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
   analogWrite(ENA, motorSpeed);
   analogWrite(ENB, motorSpeed);
+}
+
+void moveBackwardSlow() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
+  analogWrite(ENA, slowSpeed);
+  analogWrite(ENB, slowSpeed);
 }
 
 void turnLeft() {
@@ -222,26 +486,10 @@ void turnRight() {
 }
 
 void stopMotors() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
   analogWrite(ENA, 0);
   analogWrite(ENB, 0);
-}
-
-// ==================== LINE FOLLOWING ====================
-
-void followLine(int left, int right) {
-  if (left == 0 && right == 0) moveForward();
-  else if (left == 0 && right == 1) {
-    analogWrite(ENA, motorSpeed - 50);
-    analogWrite(ENB, motorSpeed);
-  }
-  else if (left == 1 && right == 0) {
-    analogWrite(ENA, motorSpeed);
-    analogWrite(ENB, motorSpeed - 50);
-  }
-  else {
-    analogWrite(ENA, motorSpeed / 2);
-    analogWrite(ENB, motorSpeed / 2);
-  }
 }
 
 // ==================== ULTRASONIC ====================
@@ -260,71 +508,7 @@ int getDistance() {
   return distance;
 }
 
-// ==================== COLOR SENSOR ====================
-
-String readColor() {
-  digitalWrite(S2, LOW); digitalWrite(S3, LOW);
-  redFrequency = pulseIn(sensorOut, LOW);
-  delay(5);
-
-  digitalWrite(S2, HIGH); digitalWrite(S3, HIGH);
-  greenFrequency = pulseIn(sensorOut, LOW);
-  delay(5);
-
-  digitalWrite(S2, LOW); digitalWrite(S3, HIGH);
-  blueFrequency = pulseIn(sensorOut, LOW);
-
-  if (DEBUG_COLOR && millis() - lastColorPrint > COLOR_PRINT_INTERVAL) {
-    lastColorPrint = millis();
-    Serial.print("R: "); Serial.print(redFrequency);
-    Serial.print(" | G: "); Serial.print(greenFrequency);
-    Serial.print(" | B: "); Serial.print(blueFrequency);
-    Serial.print(" => ");
-  }
-
-  if (isInRange(redFrequency, greenFrequency, blueFrequency, redColor)) {
-    if (DEBUG_COLOR) Serial.println("RED");
-    return "RED";
-  }
-  if (isInRange(redFrequency, greenFrequency, blueFrequency, greenColor)) {
-    if (DEBUG_COLOR) Serial.println("GREEN");
-    return "GREEN";
-  }
-  if (isInRange(redFrequency, greenFrequency, blueFrequency, blueColor)) {
-    if (DEBUG_COLOR) Serial.println("BLUE");
-    return "BLUE";
-  }
-
-  if (DEBUG_COLOR) Serial.println("NONE");
-  return "NONE";
-}
-
-bool isInRange(int r, int g, int b, ColorRange c) {
-  return (r >= c.rMin && r <= c.rMax &&
-          g >= c.gMin && g <= c.gMax &&
-          b >= c.bMin && b <= c.bMax);
-}
-
-// ==================== ARM ====================
-
-void moveArmToPosition(ArmPosition p) {
-  baseServo.write(p.base);
-  delay(300);
-  gripperServo.write(p.gripper);
-  delay(300);
-}
-
-void performPickup() {
-  moveArmToPosition(pickupPos);
-  moveArmToPosition(holdPos);
-  moveArmToPosition(homePos);
-}
-
-void performPlace() {
-  moveArmToPosition(placeLeftPos);
-  moveArmToPosition(releasePos);
-  moveArmToPosition(homePos);
-}
+// ==================== OBSTACLE AVOIDANCE ====================
 
 void avoidObstacle() {
   stopMotors();
@@ -333,4 +517,5 @@ void avoidObstacle() {
   delay(500);
   turnRight();
   delay(700);
+  stopMotors();
 }
